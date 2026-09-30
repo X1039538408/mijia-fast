@@ -15,7 +15,7 @@
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",
-    "check": "node --check src/core.mjs && node --check src/mcp-client.mjs && node --check src/bathroom.mjs && node --check src/facade.mjs && node --check src/patch.mjs && node --check src/validation.mjs && node --check src/ipc.mjs && node --check src/daemon.mjs && node --check src/mcp-server.mjs && node --check src/cli.mjs"
+    "check": "node --check src/core.mjs && node --check src/mcp-client.mjs && node --check src/bathroom.mjs && node --check src/facade.mjs && node --check src/patch.mjs && node --check src/validation.mjs && node --check src/ipc.mjs && node --check src/daemon.mjs && node --check src/service.mjs && node --check src/ux.mjs && node --check src/mcp-server.mjs && node --check src/cli.mjs"
   },
   "engines": {
     "node": ">=20"

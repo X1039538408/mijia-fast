@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CacheStore, compactDevices, compactGraphList, normalizePlan, readJson, summarizeGraph, writeJsonAtomic } from './core.mjs';
+import { listSnapshotFiles, readAuditEntries } from './ux.mjs';
 import { extractToolJson, McpProcessClient } from './mcp-client.mjs';
 import {
   BATHROOM_DEVICES,
@@ -63,24 +65,30 @@ function isNotFoundError(error) {
 
 export class MijiaFacade {
   constructor({
-    configPath = process.env.MIJIA_CONFIG_PATH || path.join(PACKAGE_ROOT, 'config', 'mijia.json'),
     dataDir = process.env.MIJIA_DATA_DIR || path.join(PACKAGE_ROOT, '.data'),
+    configPath,
     backendCommand,
     backendArgs,
     backend,
     gatewayUrl,
   } = {}) {
+    const privateConfigPath = path.join(dataDir, 'local-config.json');
+    const selectedConfigPath = configPath || process.env.MIJIA_CONFIG_PATH || (fsSync.existsSync(privateConfigPath)
+      ? privateConfigPath
+      : path.join(PACKAGE_ROOT, 'config', 'mijia.json'));
     try {
-      this.localConfig = JSON.parse(fsSync.readFileSync(configPath, 'utf8'));
+      this.localConfig = JSON.parse(fsSync.readFileSync(selectedConfigPath, 'utf8'));
     } catch {
       this.localConfig = {};
     }
+    this.configPath = selectedConfigPath;
     const localBackend = localOhMySageBackend();
     this.dataDir = dataDir;
     this.gatewayUrl = gatewayUrl || process.env.GATEWAY_URL || this.localConfig.gateway?.url || 'http://127.0.0.1:8086';
     this.cache = new CacheStore(path.join(dataDir, 'cache.json'));
     this.authPasscode = undefined;
     this.reconnectPromise = undefined;
+    this.pendingChanges = new Map();
     this.backend = backend ?? new McpProcessClient({
       command: backendCommand || process.env.MIJIA_BACKEND_COMMAND || localBackend?.command || 'oh-my-sage-mcp',
       args: backendArgs || (process.env.MIJIA_BACKEND_ARGS ? JSON.parse(process.env.MIJIA_BACKEND_ARGS) : localBackend?.args || []),
@@ -169,6 +177,24 @@ export class MijiaFacade {
     return { rule: current.summary, lint: lintGraph(current.graph) };
   }
 
+  async ruleExplain({ id, name, refresh = false } = {}) {
+    const current = await this.ruleRead({ id, name, full: true, refresh });
+    const nodes = Array.isArray(current.graph?.nodes) ? current.graph.nodes : [];
+    const flow = nodes.map((node) => ({
+      id: String(node.id ?? ''),
+      type: node.type ?? 'unknown',
+      seconds: node.cfg?.seconds ?? node.seconds ?? node.props?.seconds,
+      targets: node.outputs?.output ?? [],
+    }));
+    return {
+      rule: current.summary,
+      flow,
+      triggers: flow.filter((node) => /input|trigger/i.test(node.type)),
+      actions: flow.filter((node) => /output|action|set/i.test(node.type)),
+      delays: flow.filter((node) => /delay/i.test(node.type)).map((node) => ({ id: node.id, seconds: node.seconds })),
+    };
+  }
+
   async backupCreate() {
     const rules = await this.rules({ refresh: true });
     const fullRules = await Promise.all(rules.map(async (rule) => {
@@ -196,6 +222,102 @@ export class MijiaFacade {
       graph,
     });
     return { id, file, scope: 'rule' };
+  }
+
+  async readSnapshot(snapshotId) {
+    const entry = (await listSnapshotFiles(this.dataDir)).find((item) => String(item.id) === String(snapshotId));
+    if (!entry) throw new Error(`找不到快照: ${snapshotId}`);
+    return { entry, snapshot: await readJson(entry.file) };
+  }
+
+  async backupList() {
+    return listSnapshotFiles(this.dataDir);
+  }
+
+  async backupShow(snapshotId, { full = false } = {}) {
+    const { entry, snapshot } = await this.readSnapshot(snapshotId);
+    const result = {
+      ...entry,
+      rules: (snapshot.rules ?? (snapshot.graph ? [snapshot.graph] : [])).map((graph) => summarizeGraph(graph)),
+    };
+    if (full) result.snapshot = snapshot;
+    return result;
+  }
+
+  async backupDiff(snapshotId) {
+    const { snapshot } = await this.readSnapshot(snapshotId);
+    const expected = snapshot.rules ?? (snapshot.graph ? [snapshot.graph] : []);
+    const changes = [];
+    for (const graph of expected) {
+      let current;
+      try {
+        const result = await this.call('mijia_get_graph', { id: graph.id, response_format: 'json' });
+        current = result.graph ?? result;
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
+      changes.push({
+        id: String(graph.id),
+        name: graph.name ?? graph.cfg?.userData?.name ?? graph.id,
+        status: !current ? 'missing' : graphHash(current) === graphHash(graph) ? 'unchanged' : 'changed',
+      });
+    }
+    return { snapshot: snapshotId, changes };
+  }
+
+  async history({ limit = 50 } = {}) {
+    return readAuditEntries(this.dataDir, { limit });
+  }
+
+  async discoverConfig({ write = true } = {}) {
+    const devices = await this.inventory({ refresh: true });
+    const rules = await this.rules({ refresh: true });
+    const discoveredDevices = Object.fromEntries(devices.map((device, index) => [
+      `device_${index + 1}`,
+      Object.fromEntries(Object.entries({ name: device.name, did: device.did, model: device.model, room: device.room }).filter(([, value]) => value !== undefined)),
+    ]));
+    const discoveredRules = Object.fromEntries(rules.map((rule, index) => [`rule_${index + 1}`, rule.name]));
+    const config = {
+      ...this.localConfig,
+      gateway: { ...this.localConfig.gateway, url: this.gatewayUrl },
+      devices: { ...this.localConfig.devices, ...discoveredDevices },
+      rules: { ...this.localConfig.rules, ...discoveredRules },
+    };
+    const file = path.join(this.dataDir, 'local-config.json');
+    if (write) await writeJsonAtomic(file, config);
+    this.localConfig = config;
+    this.configPath = file;
+    return { file, deviceCount: devices.length, ruleCount: rules.length };
+  }
+
+  issueChange(args) {
+    const token = randomUUID();
+    this.pendingChanges.set(token, { createdAt: Date.now(), args: { ...args } });
+    return token;
+  }
+
+  async patchPreview(args = {}) {
+    const bathroom = args.bathroomDelays === true || args.op === 'set-bathroom-delays';
+    const preview = bathroom
+      ? await this.patchBathroomDelays({ ...args, dryRun: true })
+      : await this.patchRule({ ...args, dryRun: true });
+    const confirmationToken = this.issueChange({ ...args, bathroomDelays: bathroom });
+    return { ...preview, requiresConfirmation: true, confirmationToken, expiresInSeconds: 300 };
+  }
+
+  async patchConfirm(confirmationToken) {
+    const pending = this.pendingChanges.get(confirmationToken);
+    if (!pending || Date.now() - pending.createdAt > 5 * 60 * 1000) {
+      this.pendingChanges.delete(confirmationToken);
+      throw new Error('变更确认已过期或不存在，请重新执行预览');
+    }
+    this.pendingChanges.delete(confirmationToken);
+    const { bathroomDelays, ...args } = pending.args;
+    const op = args.op;
+    if (bathroomDelays || op === 'set-bathroom-delays') {
+      return this.patchBathroomDelays({ ...args, lightDelay: args.lightDelay ?? args.light_delay, ventDelay: args.ventDelay ?? args.vent_delay, dryRun: false });
+    }
+    return this.patchRule({ ...args, dryRun: false });
   }
 
   async invalidateRules() {
@@ -522,9 +644,9 @@ export class MijiaFacade {
     return this.ruleApply(input, { dryRun });
   }
 
-  async restore(snapshotId) {
-    const file = path.join(this.dataDir, 'snapshots', `${snapshotId}.json`);
-    const snapshot = await readJson(file);
+  async restore(snapshotId, { dryRun = false } = {}) {
+    const { snapshot } = await this.readSnapshot(snapshotId);
+    if (dryRun) return { dryRun: true, ...(await this.backupDiff(snapshotId)) };
     const backup = await this.backupCreate();
     const verificationErrors = [];
     for (const graph of snapshot.rules ?? []) {

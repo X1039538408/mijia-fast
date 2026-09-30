@@ -36,6 +36,9 @@ test('MCP facade exposes only the five compact tools', async () => {
     assert.deepEqual(connect.inputSchema.required ?? [], []);
     const get = response.result.tools.find((tool) => tool.name === 'mi_get');
     assert.equal(get.inputSchema.properties.lint.type, 'boolean');
+    const patch = response.result.tools.find((tool) => tool.name === 'mi_patch');
+    assert.equal(patch.inputSchema.properties.confirmation_token.type, 'string');
+    assert.match(patch.description, /预览/);
   } finally {
     child.stdin.end();
     if (child.exitCode === null) child.kill();

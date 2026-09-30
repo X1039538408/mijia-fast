@@ -6,8 +6,9 @@ import { MijiaFacade } from './facade.mjs';
 import { createIpcServer, pipeEndpoint } from './ipc.mjs';
 
 const INVOCABLE_METHODS = new Set([
-  'connect', 'inventory', 'rules', 'ruleRead', 'rulePlan', 'ruleApply',
-  'ruleLint', 'backupCreate', 'patchRule', 'patchBathroomDelays', 'sync', 'restore', 'search',
+  'connect', 'inventory', 'rules', 'ruleRead', 'ruleExplain', 'rulePlan', 'ruleApply',
+  'ruleLint', 'backupCreate', 'backupList', 'backupShow', 'backupDiff', 'history',
+  'patchRule', 'patchPreview', 'patchConfirm', 'patchBathroomDelays', 'sync', 'restore', 'search',
 ]);
 
 function stateFile(dataDir) {
@@ -45,6 +46,7 @@ export class MijiaDaemon {
     this.server = undefined;
     this.endpoint = pipeEndpoint(dataDir);
     this.startedAt = undefined;
+    this.lastError = undefined;
     this.shuttingDown = false;
   }
 
@@ -52,7 +54,14 @@ export class MijiaDaemon {
     if (this.server) return this.status();
     await this.facade.connect({ passcode: this.passcode, gatewayUrl: this.gatewayUrl });
     await removeUnixSocket(this.endpoint);
-    this.server = net.createServer((socket) => createIpcServer(socket, (request) => this.handle(request)));
+    this.server = net.createServer((socket) => createIpcServer(socket, async (request) => {
+      try {
+        return await this.handle(request);
+      } catch (error) {
+        this.lastError = { at: new Date().toISOString(), message: String(error.message || error) };
+        throw error;
+      }
+    }));
     await new Promise((resolve, reject) => {
       const onError = (error) => { this.server.off('listening', onListening); reject(error); };
       const onListening = () => { this.server.off('error', onError); resolve(); };
@@ -66,6 +75,7 @@ export class MijiaDaemon {
       endpoint: this.endpoint,
       gatewayUrl: this.gatewayUrl,
       startedAt: this.startedAt,
+      backendConnected: true,
     });
     return this.status();
   }
@@ -78,6 +88,7 @@ export class MijiaDaemon {
       gatewayUrl: this.gatewayUrl,
       startedAt: this.startedAt,
       backendConnected: Boolean(this.facade.backend?.initialized),
+      lastError: this.lastError,
     };
   }
 
@@ -97,7 +108,10 @@ export class MijiaDaemon {
       if (action === 'ruleApply' || action === 'sync') {
         return this.facade[action](request.args ?? {}, { dryRun: request.dryRun === true });
       }
-      if (action === 'restore') return this.facade.restore(request.args);
+      if (action === 'restore') return this.facade.restore(request.args?.id ?? request.args, { dryRun: request.dryRun === true });
+      if (action === 'patchConfirm') return this.facade.patchConfirm(request.args?.confirmationToken ?? request.args);
+      if (action === 'backupShow') return this.facade.backupShow(request.args?.id ?? request.args, { full: request.args?.full === true });
+      if (action === 'backupDiff') return this.facade.backupDiff(request.args?.id ?? request.args);
       return this.facade[action](request.args ?? {});
     }
     if (method === 'shutdown') {

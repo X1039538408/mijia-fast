@@ -27,8 +27,8 @@ const TOOLS = [
   },
   {
     name: 'mi_patch',
-    description: '对单条规则执行补丁；默认备份、写入并回读验证。',
-    inputSchema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, op: { type: 'string' }, value: {}, light_delay: { type: 'string' }, vent_delay: { type: 'string' }, dry_run: { type: 'boolean' } }, required: ['op'] },
+    description: '先预览单条规则补丁；提供 confirmation_token 后才备份、写入并回读验证。',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, op: { type: 'string' }, value: {}, light_delay: { type: 'string' }, vent_delay: { type: 'string' }, dry_run: { type: 'boolean' }, confirmation_token: { type: 'string' } } },
   },
   {
     name: 'mi_sync',
@@ -102,16 +102,18 @@ async function callTool(name, args) {
       if (args.kind === 'rule') return daemonInvoke('ruleRead', { id: args.id, name: args.name, full: args.full });
       throw new Error(`不支持的资源类型: ${args.kind}`);
     case 'mi_patch':
+      if (args.confirmation_token) return daemonInvoke('patchConfirm', { confirmationToken: args.confirmation_token });
       if (args.op === 'set-bathroom-delays') {
-        return daemonInvoke('patchBathroomDelays', {
+        return daemonInvoke('patchPreview', {
           id: args.id,
           name: args.name,
+          op: args.op,
+          bathroomDelays: true,
           lightDelay: args.light_delay ?? args.light,
           ventDelay: args.vent_delay ?? args.vent,
-          dryRun: args.dry_run === true,
         });
       }
-      return daemonInvoke('patchRule', { id: args.id, name: args.name, op: args.op, value: args.value, dryRun: args.dry_run === true });
+      return daemonInvoke('patchPreview', { id: args.id, name: args.name, op: args.op, value: args.value });
     case 'mi_sync':
       return daemonInvoke('sync', await readPlan(args), { dryRun: args.dry_run !== false });
     case 'mi_inventory':

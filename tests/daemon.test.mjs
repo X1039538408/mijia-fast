@@ -34,3 +34,18 @@ test('daemon exposes the bathroom delay patch as a high-level method', async () 
     { received: { lightDelay: '2m', ventDelay: '5m' } },
   );
 });
+
+test('daemon exposes confirmation-gated patch methods', async () => {
+  const facade = {
+    async patchPreview(args) { return { preview: args }; },
+    async patchConfirm(token) { return { confirmed: token }; },
+    async close() {},
+  };
+  const daemon = new MijiaDaemon({
+    dataDir: await import('node:fs/promises').then((fs) => fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-daemon-confirm-'))),
+    facade,
+  });
+
+  assert.deepEqual(await daemon.handle({ method: 'invoke', action: 'patchPreview', args: { op: 'set-delay' } }), { preview: { op: 'set-delay' } });
+  assert.deepEqual(await daemon.handle({ method: 'invoke', action: 'patchConfirm', args: { confirmationToken: 'token-1' } }), { confirmed: 'token-1' });
+});

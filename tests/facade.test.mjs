@@ -76,6 +76,13 @@ class RestoreFailureBackend extends FakeBackend {
   }
 }
 
+class DiscoveryBackend extends FakeBackend {
+  async callTool(name, args) {
+    if (name === 'mijia_get_devices') return { structuredContent: { devices: [{ did: 'lamp-1', name: '卧室吸顶灯', room: '卧室', online: true }] } };
+    return super.callTool(name, args);
+  }
+}
+
 test('ruleApply uses an alias, creates a snapshot, and verifies the update', async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-facade-'));
   const backend = new FakeBackend();
@@ -194,4 +201,61 @@ test('restore does not create a duplicate after a non-not-found update error', a
 
   await assert.rejects(facade.restore('restore-1'), /网络超时/);
   assert.equal(backend.created, false);
+});
+
+test('snapshot APIs list, inspect, diff, and preview restore without writing', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-snapshot-'));
+  const backend = new FakeBackend();
+  const facade = new MijiaFacade({ dataDir, backend });
+  const created = await facade.backupCreate();
+
+  const list = await facade.backupList();
+  const detail = await facade.backupShow(created.id);
+  const diff = await facade.backupDiff(created.id);
+  const preview = await facade.restore(created.id, { dryRun: true });
+
+  assert.equal(list[0].id, created.id);
+  assert.equal(detail.ruleCount, 1);
+  assert.deepEqual(diff.changes, [{ id: 'rule-1', name: '卧室全局无人关闭灯光', status: 'unchanged' }]);
+  assert.equal(preview.dryRun, true);
+  assert.equal(backend.calls.some((call) => call.name === 'mijia_update_graph'), false);
+});
+
+test('patch preview requires an in-memory confirmation token before writing', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-confirm-'));
+  const backend = new FakeBackend();
+  const facade = new MijiaFacade({ dataDir, backend });
+
+  const preview = await facade.patchPreview({ name: 'bedroom_all_empty_off', op: 'set-delay', value: '10s' });
+  assert.equal(preview.requiresConfirmation, true);
+  assert.equal(backend.calls.some((call) => call.name === 'mijia_update_graph'), false);
+
+  const result = await facade.patchConfirm(preview.confirmationToken);
+  assert.equal(result.verified, true);
+  assert.equal(backend.calls.filter((call) => call.name === 'mijia_update_graph').length, 1);
+});
+
+test('discoverConfig writes private local mappings without changing the public config', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-discover-'));
+  const facade = new MijiaFacade({ dataDir, backend: new DiscoveryBackend() });
+  await facade.connect({ passcode: '123456' });
+
+  const result = await facade.discoverConfig();
+  const local = JSON.parse(await fs.readFile(result.file, 'utf8'));
+
+  assert.equal(result.deviceCount, 1);
+  assert.equal(local.devices.device_1.did, 'lamp-1');
+  assert.equal(facade.configPath, result.file);
+  assert.equal(result.file.endsWith(path.join('.data', 'local-config.json')), false);
+});
+
+test('ruleExplain summarizes the flow without returning the full Graph', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mijia-fast-explain-'));
+  const facade = new MijiaFacade({ dataDir, backend: new FakeBackend() });
+  const result = await facade.ruleExplain({ name: 'bedroom_all_empty_off' });
+
+  assert.equal(result.rule.name, '卧室全局无人关闭灯光');
+  assert.deepEqual(result.delays, [{ id: 'n2', seconds: 30 }]);
+  assert.deepEqual(result.flow.map((item) => item.type), ['deviceInput', 'delay', 'deviceOutput']);
+  assert.equal('graph' in result, false);
 });
