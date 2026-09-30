@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "mijia-fast": {
+      "command": "node",
+      "args": [
+        "C:/path/to/mijia-fast/src/mcp-server.mjs"
+      ],
+      "environment": {
+        "GATEWAY_URL": "http://127.0.0.1:8086",
+        "MIJIA_BACKEND_COMMAND": "oh-my-sage-mcp",
+        "MIJIA_DATA_DIR": "C:/path/to/mijia-fast/.data"
+      }
+    }
+  }
+}

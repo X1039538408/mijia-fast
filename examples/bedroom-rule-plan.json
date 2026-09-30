@@ -1,0 +1,15 @@
+{
+  "allowDelete": false,
+  "operations": [
+    {
+      "op": "enable",
+      "name": "卧室入口有人开筒灯",
+      "value": true
+    },
+    {
+      "op": "enable",
+      "name": "卧室入口无人关筒灯",
+      "value": true
+    }
+  ]
+}

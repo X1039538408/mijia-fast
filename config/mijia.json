@@ -1,0 +1,22 @@
+{
+  "gateway": { "url": "http://127.0.0.1:8086" },
+  "devices": {
+    "bathroom_occupancy": { "name": "Bathroom occupancy sensor", "did": "example-es3" },
+    "bathroom_light": { "name": "Bathroom light", "did": "example-bath-heater" },
+    "bathroom_ventilation": { "name": "Bathroom ventilation", "did": "example-bath-heater" }
+  },
+  "automation": {
+    "bathroom": {
+      "devices": {
+        "occupancy": { "did": "example-es3", "siid": 2, "piid": 1078 },
+        "light": { "did": "example-bath-heater", "siid": 2, "piid": 1, "value": false },
+        "ventilation": { "did": "example-bath-heater", "siid": 4, "piid": 8, "value": false }
+      }
+    }
+  },
+  "rules": {
+    "bedroom_all_empty_off": "卧室全局无人关闭灯光",
+    "bathroom_leave_light_vent_off": "Bathroom leave: turn off light and ventilation",
+    "bathroom_enter_light_vent_on": "Bathroom enter: turn on light and ventilation"
+  }
+}
